@@ -1,0 +1,122 @@
+[
+  {
+    "id": 1,
+    "text": "This laptop is absolutely amazing! The battery life lasts all day and the screen quality is stunning. Best purchase I've made this year.",
+    "star_rating": 5,
+    "category": "Electronics",
+    "expected_sentiment": "Positive",
+    "expected_aspects": ["battery life", "screen quality"]
+  },
+  {
+    "id": 2,
+    "text": "Terrible product. The keyboard stopped working after just two weeks. Customer service was unhelpful and rude. Complete waste of money.",
+    "star_rating": 1,
+    "category": "Electronics",
+    "expected_sentiment": "Negative",
+    "expected_aspects": ["keyboard", "customer service"]
+  },
+  {
+    "id": 3,
+    "text": "The camera quality is great but the battery drains too fast. The build quality feels premium though. Mixed feelings overall.",
+    "star_rating": 3,
+    "category": "Electronics",
+    "expected_sentiment": "Neutral",
+    "expected_aspects": ["camera quality", "battery", "build quality"]
+  },
+  {
+    "id": 4,
+    "text": "Fast shipping and the product was exactly as described. The sound quality on these headphones is incredible for the price point.",
+    "star_rating": 5,
+    "category": "Electronics",
+    "expected_sentiment": "Positive",
+    "expected_aspects": ["shipping", "sound quality", "price"]
+  },
+  {
+    "id": 5,
+    "text": "The software keeps crashing and the touchscreen is unresponsive. However, the display resolution is excellent and colors are vibrant.",
+    "star_rating": 2,
+    "category": "Electronics",
+    "expected_sentiment": "Negative",
+    "expected_aspects": ["software", "touchscreen", "display resolution"]
+  },
+  {
+    "id": 6,
+    "text": "Decent phone for the price. Nothing spectacular but it gets the job done. The processor is a bit slow for gaming but fine for everyday use.",
+    "star_rating": 3,
+    "category": "Electronics",
+    "expected_sentiment": "Neutral",
+    "expected_aspects": ["price", "processor"]
+  },
+  {
+    "id": 7,
+    "text": "Outstanding noise cancellation on these earbuds. The comfort level is unmatched and they pair instantly with any device. Highly recommend!",
+    "star_rating": 5,
+    "category": "Electronics",
+    "expected_sentiment": "Positive",
+    "expected_aspects": ["noise cancellation", "comfort", "pairing"]
+  },
+  {
+    "id": 8,
+    "text": "Received a defective unit. The screen had dead pixels and the charging port was loose. Returning immediately for a refund.",
+    "star_rating": 1,
+    "category": "Electronics",
+    "expected_sentiment": "Negative",
+    "expected_aspects": ["screen", "charging port"]
+  },
+  {
+    "id": 9,
+    "text": "Good tablet for reading and web browsing. The storage capacity is limited but expandable via microSD. Battery lasts about 8 hours with moderate use.",
+    "star_rating": 4,
+    "category": "Electronics",
+    "expected_sentiment": "Positive",
+    "expected_aspects": ["storage", "battery"]
+  },
+  {
+    "id": 10,
+    "text": "The design is sleek and modern but the performance doesn't match the premium price tag. I expected better specs for what I paid.",
+    "star_rating": 2,
+    "category": "Electronics",
+    "expected_sentiment": "Negative",
+    "expected_aspects": ["design", "performance", "price"]
+  },
+  {
+    "id": 11,
+    "text": "Perfect monitor for both work and gaming. The 4K resolution is crisp, refresh rate is smooth, and the color accuracy is professional grade.",
+    "star_rating": 5,
+    "category": "Electronics",
+    "expected_sentiment": "Positive",
+    "expected_aspects": ["resolution", "refresh rate", "color accuracy"]
+  },
+  {
+    "id": 12,
+    "text": "Average wireless mouse. The ergonomics are okay but the scroll wheel feels cheap. Bluetooth connectivity drops occasionally.",
+    "star_rating": 3,
+    "category": "Electronics",
+    "expected_sentiment": "Neutral",
+    "expected_aspects": ["ergonomics", "scroll wheel", "bluetooth"]
+  },
+  {
+    "id": 13,
+    "text": "This smart speaker has excellent voice recognition and the sound fills the room nicely. Setup was easy and integration with smart home devices is seamless.",
+    "star_rating": 5,
+    "category": "Electronics",
+    "expected_sentiment": "Positive",
+    "expected_aspects": ["voice recognition", "sound", "setup", "smart home integration"]
+  },
+  {
+    "id": 14,
+    "text": "Do not buy this router. The WiFi range is abysmal and it needs to be restarted every few days. The firmware updates break more things than they fix.",
+    "star_rating": 1,
+    "category": "Electronics",
+    "expected_sentiment": "Negative",
+    "expected_aspects": ["WiFi range", "reliability", "firmware"]
+  },
+  {
+    "id": 15,
+    "text": "The keyboard mechanical switches feel satisfying and the RGB lighting is customizable. However, the wrist rest could be more comfortable for long typing sessions.",
+    "star_rating": 4,
+    "category": "Electronics",
+    "expected_sentiment": "Positive",
+    "expected_aspects": ["mechanical switches", "RGB lighting", "wrist rest"]
+  }
+]
