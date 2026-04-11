@@ -90,6 +90,29 @@ jobs:
           aws iam attach-role-policy --role-name ecsTaskExecutionRole \
             --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy 2>/dev/null || true
 
+          # Add CloudWatch Logs permissions
+          cat > /tmp/logs-policy.json << 'LOGEOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents",
+                "logs:DescribeLogStreams"
+              ],
+              "Resource": "arn:aws:logs:*:*:*"
+            }]
+          }
+          LOGEOF
+          aws iam put-role-policy --role-name ecsTaskExecutionRole \
+            --policy-name CloudWatchLogsFullAccess \
+            --policy-document file:///tmp/logs-policy.json 2>/dev/null || true
+
+          # Pre-create the log group
+          aws logs create-log-group --log-group-name /ecs/sentiment-analysis 2>/dev/null || true
+
           EXEC_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/ecsTaskExecutionRole"
 
           # Create ECS cluster
