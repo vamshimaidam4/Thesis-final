@@ -1,0 +1,165 @@
+name: Deploy to AWS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: sentiment-analysis
+  APP_RUNNER_SERVICE: sentiment-analysis-app
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create ECR repository
+        run: |
+          aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} 2>/dev/null || \
+          aws ecr create-repository \
+            --repository-name ${{ env.ECR_REPOSITORY }} \
+            --image-scanning-configuration scanOnPush=true
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG -t $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:latest .
+          docker push $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
+          docker push $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:latest
+          echo "IMAGE_URI=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Create App Runner access role
+        run: |
+          # Create trust policy
+          cat > trust-policy.json << 'TRUST_EOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "build.apprunner.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          }
+          TRUST_EOF
+
+          # Create role if not exists
+          aws iam get-role --role-name AppRunnerECRAccessRole 2>/dev/null || \
+          aws iam create-role \
+            --role-name AppRunnerECRAccessRole \
+            --assume-role-policy-document file://trust-policy.json
+
+          # Attach ECR read policy
+          aws iam attach-role-policy \
+            --role-name AppRunnerECRAccessRole \
+            --policy-arn arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess 2>/dev/null || true
+
+          # Wait for role propagation
+          sleep 10
+
+          # Get role ARN
+          ROLE_ARN=$(aws iam get-role --role-name AppRunnerECRAccessRole --query 'Role.Arn' --output text)
+          echo "ACCESS_ROLE_ARN=$ROLE_ARN" >> $GITHUB_ENV
+
+      - name: Deploy to App Runner
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_URI="${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
+
+          # Check if service exists
+          SERVICE_ARN=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='${{ env.APP_RUNNER_SERVICE }}'].ServiceArn" --output text 2>/dev/null)
+
+          if [ -z "$SERVICE_ARN" ] || [ "$SERVICE_ARN" = "None" ]; then
+            echo "Creating new App Runner service..."
+            aws apprunner create-service \
+              --service-name ${{ env.APP_RUNNER_SERVICE }} \
+              --source-configuration "{
+                \"AuthenticationConfiguration\": {
+                  \"AccessRoleArn\": \"${{ env.ACCESS_ROLE_ARN }}\"
+                },
+                \"AutoDeploymentsEnabled\": false,
+                \"ImageRepository\": {
+                  \"ImageIdentifier\": \"${ECR_URI}\",
+                  \"ImageRepositoryType\": \"ECR\",
+                  \"ImageConfiguration\": {
+                    \"Port\": \"8000\",
+                    \"RuntimeEnvironmentVariables\": {
+                      \"DEVICE\": \"cpu\",
+                      \"MODEL_PATH\": \"./models\"
+                    }
+                  }
+                }
+              }" \
+              --instance-configuration "{
+                \"Cpu\": \"1024\",
+                \"Memory\": \"2048\"
+              }" \
+              --health-check-configuration "{
+                \"Protocol\": \"HTTP\",
+                \"Path\": \"/api/health\",
+                \"Interval\": 20,
+                \"Timeout\": 5,
+                \"HealthyThreshold\": 1,
+                \"UnhealthyThreshold\": 5
+              }"
+          else
+            echo "Updating existing App Runner service..."
+            aws apprunner update-service \
+              --service-arn "$SERVICE_ARN" \
+              --source-configuration "{
+                \"AuthenticationConfiguration\": {
+                  \"AccessRoleArn\": \"${{ env.ACCESS_ROLE_ARN }}\"
+                },
+                \"AutoDeploymentsEnabled\": false,
+                \"ImageRepository\": {
+                  \"ImageIdentifier\": \"${ECR_URI}\",
+                  \"ImageRepositoryType\": \"ECR\",
+                  \"ImageConfiguration\": {
+                    \"Port\": \"8000\",
+                    \"RuntimeEnvironmentVariables\": {
+                      \"DEVICE\": \"cpu\",
+                      \"MODEL_PATH\": \"./models\"
+                    }
+                  }
+                }
+              }"
+          fi
+
+      - name: Wait for deployment and get URL
+        run: |
+          echo "Waiting for App Runner service to become active..."
+          for i in $(seq 1 30); do
+            STATUS=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='${{ env.APP_RUNNER_SERVICE }}'].Status" --output text)
+            URL=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='${{ env.APP_RUNNER_SERVICE }}'].ServiceUrl" --output text)
+            echo "  Attempt $i: Status=$STATUS"
+            if [ "$STATUS" = "RUNNING" ]; then
+              echo ""
+              echo "=========================================="
+              echo "  DEPLOYMENT SUCCESSFUL!"
+              echo "  URL: https://${URL}"
+              echo "=========================================="
+              break
+            fi
+            sleep 20
+          done
