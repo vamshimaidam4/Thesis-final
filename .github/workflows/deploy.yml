@@ -69,6 +69,10 @@ jobs:
           fi
           echo "Security Group: $SG_ID"
 
+          # Create ECS service-linked role
+          aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com 2>/dev/null || true
+          sleep 10
+
           # Create ECS task execution role
           cat > /tmp/ecs-trust.json << 'EOF'
           {
