@@ -8,7 +8,9 @@ on:
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: sentiment-analysis
-  APP_RUNNER_SERVICE: sentiment-analysis-app
+  ECS_CLUSTER: sentiment-cluster
+  ECS_SERVICE: sentiment-service
+  ECS_TASK_FAMILY: sentiment-task
 
 jobs:
   deploy:
@@ -42,95 +44,136 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
 
-      - name: Create App Runner access role
+      - name: Setup ECS infrastructure
         run: |
-          cat > /tmp/trust-policy.json << 'EOF'
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:latest"
+
+          # Get default VPC
+          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --query "Vpcs[0].VpcId" --output text)
+          echo "VPC: $VPC_ID"
+
+          # Get subnets
+          SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" --query "Subnets[*].SubnetId" --output text | tr '\t' ',')
+          echo "Subnets: $SUBNETS"
+
+          # Create security group if not exists
+          SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=sentiment-sg" "Name=vpc-id,Values=${VPC_ID}" --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || echo "None")
+          if [ "$SG_ID" = "None" ] || [ -z "$SG_ID" ]; then
+            SG_ID=$(aws ec2 create-security-group --group-name sentiment-sg --description "Sentiment Analysis SG" --vpc-id "$VPC_ID" --query "GroupId" --output text)
+            aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 8000 --cidr 0.0.0.0/0
+            aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 443 --cidr 0.0.0.0/0
+            aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 80 --cidr 0.0.0.0/0
+          fi
+          echo "Security Group: $SG_ID"
+
+          # Create ECS task execution role
+          cat > /tmp/ecs-trust.json << 'EOF'
           {
             "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Effect": "Allow",
-                "Principal": {
-                  "Service": "build.apprunner.amazonaws.com"
-                },
-                "Action": "sts:AssumeRole"
-              }
-            ]
+            "Statement": [{
+              "Effect": "Allow",
+              "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+              "Action": "sts:AssumeRole"
+            }]
           }
           EOF
 
-          aws iam get-role --role-name AppRunnerECRAccessRole 2>/dev/null || \
-            aws iam create-role --role-name AppRunnerECRAccessRole --assume-role-policy-document file:///tmp/trust-policy.json
+          aws iam get-role --role-name ecsTaskExecutionRole 2>/dev/null || \
+            aws iam create-role --role-name ecsTaskExecutionRole --assume-role-policy-document file:///tmp/ecs-trust.json
+          aws iam attach-role-policy --role-name ecsTaskExecutionRole \
+            --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy 2>/dev/null || true
 
-          aws iam attach-role-policy \
-            --role-name AppRunnerECRAccessRole \
-            --policy-arn arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess 2>/dev/null || true
+          EXEC_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/ecsTaskExecutionRole"
 
-          sleep 15
+          # Create ECS cluster
+          aws ecs describe-clusters --clusters $ECS_CLUSTER --query "clusters[?status=='ACTIVE'].clusterName" --output text | grep -q "$ECS_CLUSTER" || \
+            aws ecs create-cluster --cluster-name $ECS_CLUSTER
 
-      - name: Deploy to App Runner
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:latest"
-          ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/AppRunnerECRAccessRole"
-
-          SERVICE_ARN=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='${APP_RUNNER_SERVICE}'].ServiceArn | [0]" --output text 2>/dev/null || echo "None")
-
-          cat > /tmp/source-config.json << SRCEOF
+          # Register task definition
+          cat > /tmp/task-def.json << TASKEOF
           {
-            "AuthenticationConfiguration": {
-              "AccessRoleArn": "${ROLE_ARN}"
-            },
-            "AutoDeploymentsEnabled": false,
-            "ImageRepository": {
-              "ImageIdentifier": "${ECR_URI}",
-              "ImageRepositoryType": "ECR",
-              "ImageConfiguration": {
-                "Port": "8000",
-                "RuntimeEnvironmentVariables": {
-                  "DEVICE": "cpu",
-                  "MODEL_PATH": "./models"
+            "family": "${ECS_TASK_FAMILY}",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "1024",
+            "memory": "3072",
+            "executionRoleArn": "${EXEC_ROLE_ARN}",
+            "containerDefinitions": [{
+              "name": "sentiment-app",
+              "image": "${ECR_IMAGE}",
+              "portMappings": [{"containerPort": 8000, "protocol": "tcp"}],
+              "environment": [
+                {"name": "DEVICE", "value": "cpu"},
+                {"name": "MODEL_PATH", "value": "./models"}
+              ],
+              "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                  "awslogs-group": "/ecs/sentiment-analysis",
+                  "awslogs-region": "${AWS_REGION}",
+                  "awslogs-stream-prefix": "ecs",
+                  "awslogs-create-group": "true"
                 }
+              },
+              "healthCheck": {
+                "command": ["CMD-SHELL", "curl -f http://localhost:8000/api/health || exit 1"],
+                "interval": 30,
+                "timeout": 5,
+                "retries": 3,
+                "startPeriod": 60
               }
-            }
+            }]
           }
-          SRCEOF
+          TASKEOF
 
-          if [ "$SERVICE_ARN" = "None" ] || [ -z "$SERVICE_ARN" ]; then
-            echo "Creating new App Runner service..."
-            aws apprunner create-service \
-              --service-name "$APP_RUNNER_SERVICE" \
-              --source-configuration file:///tmp/source-config.json \
-              --instance-configuration '{"Cpu":"1024","Memory":"2048"}' \
-              --health-check-configuration '{"Protocol":"HTTP","Path":"/api/health","Interval":20,"Timeout":5,"HealthyThreshold":1,"UnhealthyThreshold":5}'
+          aws ecs register-task-definition --cli-input-json file:///tmp/task-def.json
+
+          # Create or update service
+          FIRST_SUBNET=$(echo "$SUBNETS" | cut -d',' -f1)
+          SECOND_SUBNET=$(echo "$SUBNETS" | cut -d',' -f2)
+
+          SERVICE_EXISTS=$(aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --query "services[?status=='ACTIVE'].serviceName" --output text 2>/dev/null || echo "")
+
+          if [ -z "$SERVICE_EXISTS" ]; then
+            echo "Creating ECS service..."
+            aws ecs create-service \
+              --cluster $ECS_CLUSTER \
+              --service-name $ECS_SERVICE \
+              --task-definition $ECS_TASK_FAMILY \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[$FIRST_SUBNET,$SECOND_SUBNET],securityGroups=[$SG_ID],assignPublicIp=ENABLED}"
           else
-            echo "Updating existing service: $SERVICE_ARN"
-            aws apprunner update-service \
-              --service-arn "$SERVICE_ARN" \
-              --source-configuration file:///tmp/source-config.json
+            echo "Updating ECS service..."
+            aws ecs update-service \
+              --cluster $ECS_CLUSTER \
+              --service $ECS_SERVICE \
+              --task-definition $ECS_TASK_FAMILY \
+              --force-new-deployment
           fi
 
-      - name: Get service URL
+          echo "SG_ID=$SG_ID" >> $GITHUB_ENV
+          echo "SUBNETS=$SUBNETS" >> $GITHUB_ENV
+
+      - name: Wait for deployment and get URL
         run: |
-          echo "Waiting for service URL..."
-          for i in $(seq 1 40); do
-            STATUS=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='${APP_RUNNER_SERVICE}'].Status | [0]" --output text 2>/dev/null || echo "UNKNOWN")
-            URL=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='${APP_RUNNER_SERVICE}'].ServiceUrl | [0]" --output text 2>/dev/null || echo "")
-            echo "  [$i/40] Status: $STATUS"
-            if [ "$STATUS" = "RUNNING" ] && [ -n "$URL" ] && [ "$URL" != "None" ]; then
-              echo ""
-              echo "=========================================="
-              echo "  DEPLOYMENT SUCCESSFUL!"
-              echo "  https://${URL}"
-              echo "=========================================="
-              exit 0
-            fi
-            if [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "DELETE_FAILED" ]; then
-              echo "Deployment failed with status: $STATUS"
-              exit 1
-            fi
-            sleep 15
-          done
-          echo "Service is still deploying. Check AWS Console for URL."
-          echo "https://console.aws.amazon.com/apprunner"
+          echo "Waiting for ECS service to stabilize..."
+          aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE --no-paginate 2>/dev/null || true
+
+          # Get task public IP
+          TASK_ARN=$(aws ecs list-tasks --cluster $ECS_CLUSTER --service-name $ECS_SERVICE --query "taskArns[0]" --output text)
+          if [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ]; then
+            ENI_ID=$(aws ecs describe-tasks --cluster $ECS_CLUSTER --tasks "$TASK_ARN" --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value | [0]" --output text)
+            PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI_ID" --query "NetworkInterfaces[0].Association.PublicIp" --output text 2>/dev/null || echo "pending")
+            echo ""
+            echo "=========================================="
+            echo "  DEPLOYMENT SUCCESSFUL!"
+            echo "  http://${PUBLIC_IP}:8000"
+            echo "  API Docs: http://${PUBLIC_IP}:8000/docs"
+            echo "=========================================="
+          else
+            echo "Task is still launching. Check AWS ECS Console."
+          fi
