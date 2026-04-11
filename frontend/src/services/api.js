@@ -1,10 +1,11 @@
 import axios from "axios";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Auto-detect: use current origin in production, localhost in dev
+const API_BASE = import.meta.env.VITE_API_URL || window.location.origin;
 
 const api = axios.create({
   baseURL: API_BASE,
-  timeout: 60000,
+  timeout: 120000,
 });
 
 export const analyzeDocument = (text) =>
@@ -33,5 +34,18 @@ export const getSeedReviews = () =>
 
 export const getSeedStats = () =>
   api.get("/api/seed/stats").then((r) => r.data);
+
+// Training endpoints
+export const startTraining = (config) =>
+  api.post("/api/training/start", config).then((r) => r.data);
+
+export const getTrainingStatus = () =>
+  api.get("/api/training/status").then((r) => r.data);
+
+export const getTrainingHistory = () =>
+  api.get("/api/training/history").then((r) => r.data);
+
+export const getTrainedModels = () =>
+  api.get("/api/training/models").then((r) => r.data);
 
 export default api;

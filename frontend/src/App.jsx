@@ -1,11 +1,12 @@
 import { BrowserRouter as Router, Routes, Route, NavLink } from "react-router-dom";
-import { Brain, BarChart3, Database, Layers, FlaskConical, LayoutDashboard } from "lucide-react";
+import { Brain, BarChart3, Database, Layers, FlaskConical, LayoutDashboard, Cpu } from "lucide-react";
 import Dashboard from "./pages/Dashboard";
 import Analyzer from "./pages/Analyzer";
 import BatchAnalysis from "./pages/BatchAnalysis";
 import SeedData from "./pages/SeedData";
 import Architecture from "./pages/Architecture";
 import Results from "./pages/Results";
+import Training from "./pages/Training";
 import "./App.css";
 
 function App() {
@@ -22,6 +23,7 @@ function App() {
           </div>
           <div className="nav-links">
             <NavLink to="/" end><LayoutDashboard size={16} /> Dashboard</NavLink>
+            <NavLink to="/training"><Cpu size={16} /> Train</NavLink>
             <NavLink to="/analyze"><FlaskConical size={16} /> Analyze</NavLink>
             <NavLink to="/batch"><BarChart3 size={16} /> Batch</NavLink>
             <NavLink to="/results"><Layers size={16} /> Results</NavLink>
@@ -32,6 +34,7 @@ function App() {
         <main className="main-content">
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/training" element={<Training />} />
             <Route path="/analyze" element={<Analyzer />} />
             <Route path="/batch" element={<BatchAnalysis />} />
             <Route path="/results" element={<Results />} />

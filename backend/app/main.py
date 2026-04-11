@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.routes import analysis, aws_routes, health, seed_routes
+from app.routes import analysis, aws_routes, health, seed_routes, training
 
 app = FastAPI(
     title="Sentiment Analysis API",
@@ -26,6 +26,7 @@ app.include_router(health.router)
 app.include_router(analysis.router)
 app.include_router(aws_routes.router)
 app.include_router(seed_routes.router)
+app.include_router(training.router)
 
 frontend_build = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
 if os.path.isdir(frontend_build):
