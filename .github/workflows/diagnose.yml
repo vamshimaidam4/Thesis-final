@@ -1,0 +1,65 @@
+name: Diagnose ECS
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: sentiment-cluster
+  ECS_SERVICE: sentiment-service
+
+jobs:
+  diagnose:
+    name: Check ECS Status
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check ECS service
+        run: |
+          echo "=== SERVICE STATUS ==="
+          aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE \
+            --query "services[0].{status:status,desired:desiredCount,running:runningCount,pending:pendingCount,events:events[:5]}" --output json
+
+          echo ""
+          echo "=== TASKS ==="
+          TASK_ARNS=$(aws ecs list-tasks --cluster $ECS_CLUSTER --service-name $ECS_SERVICE --query "taskArns" --output json)
+          echo "$TASK_ARNS"
+
+          echo ""
+          echo "=== TASK DETAILS ==="
+          TASK_ARN=$(aws ecs list-tasks --cluster $ECS_CLUSTER --service-name $ECS_SERVICE --query "taskArns[0]" --output text)
+          if [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ]; then
+            aws ecs describe-tasks --cluster $ECS_CLUSTER --tasks "$TASK_ARN" \
+              --query "tasks[0].{status:lastStatus,reason:stoppedReason,health:healthStatus,containers:containers[*].{name:name,status:lastStatus,reason:reason,exitCode:exitCode}}" --output json
+
+            echo ""
+            echo "=== NETWORK ==="
+            ENI_ID=$(aws ecs describe-tasks --cluster $ECS_CLUSTER --tasks "$TASK_ARN" --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value | [0]" --output text)
+            if [ -n "$ENI_ID" ] && [ "$ENI_ID" != "None" ]; then
+              aws ec2 describe-network-interfaces --network-interface-ids "$ENI_ID" \
+                --query "NetworkInterfaces[0].{publicIp:Association.PublicIp,privateIp:PrivateIpAddress,securityGroups:Groups[*].GroupId,subnetId:SubnetId}" --output json
+            fi
+          fi
+
+          echo ""
+          echo "=== SECURITY GROUP ==="
+          SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=sentiment-sg" --query "SecurityGroups[0].GroupId" --output text)
+          aws ec2 describe-security-groups --group-ids "$SG_ID" --query "SecurityGroups[0].IpPermissions" --output json
+
+          echo ""
+          echo "=== STOPPED TASKS (if any) ==="
+          STOPPED=$(aws ecs list-tasks --cluster $ECS_CLUSTER --service-name $ECS_SERVICE --desired-status STOPPED --query "taskArns[0]" --output text 2>/dev/null || echo "None")
+          if [ -n "$STOPPED" ] && [ "$STOPPED" != "None" ]; then
+            aws ecs describe-tasks --cluster $ECS_CLUSTER --tasks "$STOPPED" \
+              --query "tasks[0].{status:lastStatus,reason:stoppedReason,containers:containers[*].{name:name,exitCode:exitCode,reason:reason}}" --output json
+          fi
+
+          echo ""
+          echo "=== LOGS ==="
+          aws logs get-log-events --log-group-name /ecs/sentiment-analysis --log-stream-name "$(aws logs describe-log-streams --log-group-name /ecs/sentiment-analysis --order-by LastEventTime --descending --limit 1 --query 'logStreams[0].logStreamName' --output text 2>/dev/null)" --limit 30 --query "events[*].message" --output json 2>/dev/null || echo "No logs yet"
