@@ -211,7 +211,15 @@ jobs:
             aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --desired-count 0 > /dev/null
             sleep 15
             aws ecs delete-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force > /dev/null
-            sleep 10
+            echo "Waiting for service to fully drain..."
+            for i in $(seq 1 30); do
+              SVC_STATUS=$(aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --query "services[0].status" --output text 2>/dev/null || echo "GONE")
+              echo "  [$i] Service status: $SVC_STATUS"
+              if [ "$SVC_STATUS" = "INACTIVE" ] || [ "$SVC_STATUS" = "GONE" ] || [ "$SVC_STATUS" = "None" ]; then
+                break
+              fi
+              sleep 15
+            done
             SERVICE_EXISTS=""
           fi
 
