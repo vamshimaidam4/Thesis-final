@@ -202,8 +202,18 @@ jobs:
               --default-actions Type=forward,TargetGroupArn=$TG_ARN
           fi
 
-          # Create or update ECS service with ALB
+          # Check if service has ALB attached
+          SERVICE_LB=$(aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --query "services[?status=='ACTIVE'].loadBalancers[0].targetGroupArn" --output text 2>/dev/null || echo "None")
           SERVICE_EXISTS=$(aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --query "services[?status=='ACTIVE'].serviceName" --output text 2>/dev/null || echo "")
+
+          if [ -n "$SERVICE_EXISTS" ] && { [ "$SERVICE_LB" = "None" ] || [ -z "$SERVICE_LB" ]; }; then
+            echo "Service exists without ALB — deleting to recreate with ALB..."
+            aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --desired-count 0 > /dev/null
+            sleep 15
+            aws ecs delete-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force > /dev/null
+            sleep 10
+            SERVICE_EXISTS=""
+          fi
 
           if [ -z "$SERVICE_EXISTS" ]; then
             echo "Creating ECS service with ALB..."
@@ -216,7 +226,7 @@ jobs:
               --network-configuration "awsvpcConfiguration={subnets=[$FIRST_SUBNET,$SECOND_SUBNET],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" \
               --load-balancers "targetGroupArn=$TG_ARN,containerName=sentiment-app,containerPort=8000"
           else
-            echo "Updating ECS service..."
+            echo "Updating ECS service (ALB already attached)..."
             aws ecs update-service \
               --cluster $ECS_CLUSTER \
               --service $ECS_SERVICE \
