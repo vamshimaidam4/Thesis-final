@@ -158,21 +158,63 @@ jobs:
 
           aws ecs register-task-definition --cli-input-json file:///tmp/task-def.json
 
-          # Create or update service
+          # Create ALB target group
+          TG_ARN=$(aws elbv2 describe-target-groups --names sentiment-tg --query "TargetGroups[0].TargetGroupArn" --output text 2>/dev/null || echo "None")
+          if [ "$TG_ARN" = "None" ] || [ -z "$TG_ARN" ]; then
+            TG_ARN=$(aws elbv2 create-target-group \
+              --name sentiment-tg \
+              --protocol HTTP --port 8000 \
+              --vpc-id "$VPC_ID" \
+              --target-type ip \
+              --health-check-path /api/health \
+              --health-check-interval-seconds 30 \
+              --healthy-threshold-count 2 \
+              --unhealthy-threshold-count 5 \
+              --query "TargetGroups[0].TargetGroupArn" --output text)
+          fi
+          echo "Target Group: $TG_ARN"
+
+          # Create ALB
           FIRST_SUBNET=$(echo "$SUBNETS" | cut -d',' -f1)
           SECOND_SUBNET=$(echo "$SUBNETS" | cut -d',' -f2)
 
+          ALB_ARN=$(aws elbv2 describe-load-balancers --names sentiment-alb --query "LoadBalancers[0].LoadBalancerArn" --output text 2>/dev/null || echo "None")
+          if [ "$ALB_ARN" = "None" ] || [ -z "$ALB_ARN" ]; then
+            ALB_ARN=$(aws elbv2 create-load-balancer \
+              --name sentiment-alb \
+              --subnets $FIRST_SUBNET $SECOND_SUBNET \
+              --security-groups $SG_ID \
+              --scheme internet-facing \
+              --type application \
+              --query "LoadBalancers[0].LoadBalancerArn" --output text)
+            echo "Waiting for ALB to be active..."
+            aws elbv2 wait load-balancer-available --load-balancer-arns "$ALB_ARN"
+          fi
+          ALB_DNS=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --query "LoadBalancers[0].DNSName" --output text)
+          echo "ALB DNS: $ALB_DNS"
+
+          # Create listener
+          LISTENER=$(aws elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" --query "Listeners[0].ListenerArn" --output text 2>/dev/null || echo "None")
+          if [ "$LISTENER" = "None" ] || [ -z "$LISTENER" ]; then
+            aws elbv2 create-listener \
+              --load-balancer-arn "$ALB_ARN" \
+              --protocol HTTP --port 80 \
+              --default-actions Type=forward,TargetGroupArn=$TG_ARN
+          fi
+
+          # Create or update ECS service with ALB
           SERVICE_EXISTS=$(aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --query "services[?status=='ACTIVE'].serviceName" --output text 2>/dev/null || echo "")
 
           if [ -z "$SERVICE_EXISTS" ]; then
-            echo "Creating ECS service..."
+            echo "Creating ECS service with ALB..."
             aws ecs create-service \
               --cluster $ECS_CLUSTER \
               --service-name $ECS_SERVICE \
               --task-definition $ECS_TASK_FAMILY \
               --desired-count 1 \
               --launch-type FARGATE \
-              --network-configuration "awsvpcConfiguration={subnets=[$FIRST_SUBNET,$SECOND_SUBNET],securityGroups=[$SG_ID],assignPublicIp=ENABLED}"
+              --network-configuration "awsvpcConfiguration={subnets=[$FIRST_SUBNET,$SECOND_SUBNET],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" \
+              --load-balancers "targetGroupArn=$TG_ARN,containerName=sentiment-app,containerPort=8000"
           else
             echo "Updating ECS service..."
             aws ecs update-service \
@@ -182,25 +224,20 @@ jobs:
               --force-new-deployment
           fi
 
+          echo "ALB_DNS=$ALB_DNS" >> $GITHUB_ENV
           echo "SG_ID=$SG_ID" >> $GITHUB_ENV
           echo "SUBNETS=$SUBNETS" >> $GITHUB_ENV
 
-      - name: Wait for ECS and get IP
-        id: ecs-ip
+      - name: Wait for ECS
         run: |
           echo "Waiting for ECS service to stabilize..."
           aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE --no-paginate 2>/dev/null || true
-
-          TASK_ARN=$(aws ecs list-tasks --cluster $ECS_CLUSTER --service-name $ECS_SERVICE --query "taskArns[0]" --output text)
-          ENI_ID=$(aws ecs describe-tasks --cluster $ECS_CLUSTER --tasks "$TASK_ARN" --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value | [0]" --output text)
-          PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI_ID" --query "NetworkInterfaces[0].Association.PublicIp" --output text)
-          echo "ECS Public IP: $PUBLIC_IP"
-          echo "PUBLIC_IP=$PUBLIC_IP" >> $GITHUB_ENV
+          echo "ECS service stable"
 
       - name: Setup CloudFront HTTPS
         run: |
           # Check if distribution already exists
-          DIST_ID=$(aws cloudfront list-distributions --query "DistributionList.Items[?Origins.Items[0].DomainName=='${PUBLIC_IP}' || Comment=='sentiment-analysis'].Id | [0]" --output text 2>/dev/null || echo "None")
+          DIST_ID=$(aws cloudfront list-distributions --query "DistributionList.Items[?Comment=='sentiment-analysis'].Id | [0]" --output text 2>/dev/null || echo "None")
 
           if [ "$DIST_ID" != "None" ] && [ -n "$DIST_ID" ]; then
             echo "CloudFront distribution exists: $DIST_ID"
@@ -212,7 +249,7 @@ jobs:
           import json
           with open('/tmp/cf-config.json') as f:
               cfg = json.load(f)
-          cfg['Origins']['Items'][0]['DomainName'] = '${PUBLIC_IP}'
+          cfg['Origins']['Items'][0]['DomainName'] = '${ALB_DNS}'
           with open('/tmp/cf-config-updated.json','w') as f:
               json.dump(cfg, f)
           "
@@ -229,9 +266,9 @@ jobs:
               "Quantity": 1,
               "Items": [{
                 "Id": "ecs-origin",
-                "DomainName": "${PUBLIC_IP}",
+                "DomainName": "${ALB_DNS}",
                 "CustomOriginConfig": {
-                  "HTTPPort": 8000,
+                  "HTTPPort": 80,
                   "HTTPSPort": 443,
                   "OriginProtocolPolicy": "http-only",
                   "OriginSslProtocols": {"Quantity": 1, "Items": ["TLSv1.2"]}
@@ -276,7 +313,7 @@ jobs:
           echo "  DEPLOYMENT SUCCESSFUL!"
           echo ""
           echo "  HTTPS: https://${CF_DOMAIN}"
-          echo "  HTTP:  http://${PUBLIC_IP}:8000"
+          echo "  ALB:   http://${ALB_DNS}"
           echo ""
           echo "  CloudFront ID: ${DIST_ID}"
           echo "  CloudFront Status: ${CF_STATUS}"
