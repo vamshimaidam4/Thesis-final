@@ -122,7 +122,7 @@ jobs:
             "Statement": [{
               "Effect": "Allow",
               "Action": ["s3:*"],
-              "Resource": ["arn:aws:s3:::deep-learning-sentiment-models", "arn:aws:s3:::deep-learning-sentiment-models/*"]
+              "Resource": ["arn:aws:s3:::deep-learning-sentiment-models", "arn:aws:s3:::deep-learning-sentiment-models/*", "*"]
             }]
           }
           S3EOF
