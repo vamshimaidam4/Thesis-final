@@ -249,7 +249,7 @@ def analyze_with_bilstm(text: str) -> dict:
         text, max_length=256, padding="max_length",
         truncation=True, return_tensors="pt"
     )
-    enc = {k: v.to(DEVICE) for k, v in enc.items()}
+    enc = {k: v.to(DEVICE) for k, v in enc.items() if k in ("input_ids", "attention_mask")}
 
     with torch.no_grad():
         result = model(**enc)
