@@ -31,7 +31,11 @@ app.include_router(training.router)
 
 frontend_build = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
 if os.path.isdir(frontend_build):
-    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_build, "assets")), name="assets")
+    app.mount(
+        "/assets",
+        StaticFiles(directory=os.path.join(frontend_build, "assets")),
+        name="assets",
+    )
 
     @app.get("/{full_path:path}")
     async def serve_spa(request: Request, full_path: str):
@@ -39,6 +43,13 @@ if os.path.isdir(frontend_build):
         if full_path and os.path.isfile(file_path):
             return FileResponse(file_path)
         return FileResponse(os.path.join(frontend_build, "index.html"))
+else:
+    @app.get("/")
+    def root():
+        return {
+            "message": "Sentiment Analysis API",
+            "docs": "/docs",
+        }
 
 
 if __name__ == "__main__":
