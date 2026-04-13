@@ -76,9 +76,13 @@ def check_aws_connection() -> dict:
     """Verify AWS credentials and connectivity."""
     try:
         s3 = get_s3_client()
-        s3.list_buckets()
+        s3.head_bucket(Bucket=config.aws.s3_bucket)
         return {"status": "connected", "region": config.aws.region, "bucket": config.aws.s3_bucket}
     except NoCredentialsError:
         return {"status": "no_credentials", "error": "AWS credentials not configured"}
     except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchBucket"):
+            return {"status": "connected", "region": config.aws.region, "bucket": config.aws.s3_bucket,
+                    "note": "Bucket does not exist yet"}
         return {"status": "error", "error": str(e)}
