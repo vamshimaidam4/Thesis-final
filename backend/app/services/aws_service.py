@@ -5,13 +5,15 @@ from app.config import config
 
 
 def get_s3_client():
-    """Create S3 client using credentials from environment."""
-    return boto3.client(
-        "s3",
-        aws_access_key_id=config.aws.access_key_id,
-        aws_secret_access_key=config.aws.secret_access_key,
-        region_name=config.aws.region,
-    )
+    """Create S3 client using credentials from environment or IAM role."""
+    if config.aws.access_key_id and config.aws.secret_access_key:
+        return boto3.client(
+            "s3",
+            aws_access_key_id=config.aws.access_key_id,
+            aws_secret_access_key=config.aws.secret_access_key,
+            region_name=config.aws.region,
+        )
+    return boto3.client("s3", region_name=config.aws.region)
 
 
 def ensure_bucket_exists():

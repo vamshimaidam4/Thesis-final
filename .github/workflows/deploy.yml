@@ -113,7 +113,25 @@ jobs:
           # Pre-create the log group
           aws logs create-log-group --log-group-name /ecs/sentiment-analysis 2>/dev/null || true
 
+          # Create ECS task role for S3 access
+          aws iam get-role --role-name ecsTaskRole 2>/dev/null || \
+            aws iam create-role --role-name ecsTaskRole --assume-role-policy-document file:///tmp/ecs-trust.json
+          cat > /tmp/s3-policy.json << 'S3EOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": ["s3:*"],
+              "Resource": ["arn:aws:s3:::deep-learning-sentiment-models", "arn:aws:s3:::deep-learning-sentiment-models/*"]
+            }]
+          }
+          S3EOF
+          aws iam put-role-policy --role-name ecsTaskRole \
+            --policy-name S3ModelAccess \
+            --policy-document file:///tmp/s3-policy.json 2>/dev/null || true
+
           EXEC_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/ecsTaskExecutionRole"
+          TASK_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/ecsTaskRole"
 
           # Create ECS cluster
           aws ecs describe-clusters --clusters $ECS_CLUSTER --query "clusters[?status=='ACTIVE'].clusterName" --output text | grep -q "$ECS_CLUSTER" || \
@@ -128,13 +146,15 @@ jobs:
             "cpu": "1024",
             "memory": "3072",
             "executionRoleArn": "${EXEC_ROLE_ARN}",
+            "taskRoleArn": "${TASK_ROLE_ARN}",
             "containerDefinitions": [{
               "name": "sentiment-app",
               "image": "${ECR_IMAGE}",
               "portMappings": [{"containerPort": 8000, "protocol": "tcp"}],
               "environment": [
                 {"name": "DEVICE", "value": "cpu"},
-                {"name": "MODEL_PATH", "value": "./models"}
+                {"name": "MODEL_PATH", "value": "./models"},
+                {"name": "AWS_DEFAULT_REGION", "value": "${AWS_REGION}"}
               ],
               "logConfiguration": {
                 "logDriver": "awslogs",
