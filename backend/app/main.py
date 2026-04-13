@@ -1,12 +1,13 @@
 import os
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.routes import analysis, aws_routes, health, seed_routes, training
+from fastapi import FastAPI, Request  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
+from app.routes import analysis, aws_routes, health, seed_routes, training  # noqa: E402
 
 app = FastAPI(
     title="Sentiment Analysis API",
@@ -30,24 +31,14 @@ app.include_router(training.router)
 
 frontend_build = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
 if os.path.isdir(frontend_build):
-    app.mount("/", StaticFiles(directory=frontend_build, html=True), name="frontend")
+    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_build, "assets")), name="assets")
 
-
-@app.get("/")
-def root():
-    return {
-        "message": "Sentiment Analysis API",
-        "docs": "/docs",
-        "endpoints": {
-            "health": "/api/health",
-            "document_analysis": "/api/analysis/document",
-            "sentence_analysis": "/api/analysis/sentence",
-            "aspect_analysis": "/api/analysis/aspect",
-            "full_analysis": "/api/analysis/full",
-            "batch_analysis": "/api/analysis/batch",
-            "aws_status": "/api/aws/status",
-        },
-    }
+    @app.get("/{full_path:path}")
+    async def serve_spa(request: Request, full_path: str):
+        file_path = os.path.join(frontend_build, full_path)
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(frontend_build, "index.html"))
 
 
 if __name__ == "__main__":
