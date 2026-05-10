@@ -1,0 +1,218 @@
+name: Teardown AWS
+
+# Destroys all running AWS resources for this project EXCEPT the S3 bucket
+# holding the trained model artifacts. Run via "Run workflow" in the
+# Actions tab. Type DESTROY in the confirm input to actually proceed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DESTROY to confirm. Anything else aborts."
+        required: true
+        default: ""
+      delete_cloudfront:
+        description: "Also wait and fully delete CloudFront (slow, ~20 min). If false, CloudFront is only disabled (no charges, fast)."
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: sentiment-analysis
+  ECS_CLUSTER: sentiment-cluster
+  ECS_SERVICE: sentiment-service
+  ECS_TASK_FAMILY: sentiment-task
+
+jobs:
+  teardown:
+    name: Destroy AWS resources
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Verify confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "DESTROY" ]; then
+            echo "Confirmation not received. Got '${{ github.event.inputs.confirm }}', expected 'DESTROY'. Aborting."
+            exit 1
+          fi
+
+      - name: Configure AWS
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          mkdir -p ~/.aws
+          cat > ~/.aws/credentials <<EOF
+          [default]
+          aws_access_key_id=${AWS_ACCESS_KEY_ID}
+          aws_secret_access_key=${AWS_SECRET_ACCESS_KEY}
+          EOF
+          cat > ~/.aws/config <<EOF
+          [default]
+          region=${AWS_REGION}
+          EOF
+          aws sts get-caller-identity
+
+      - name: Stop SageMaker training jobs (if any in progress)
+        run: |
+          set +e
+          for j in $(aws sagemaker list-training-jobs --status-equals InProgress --max-results 50 --query "TrainingJobSummaries[].TrainingJobName" --output text); do
+            echo "Stopping SageMaker job $j"
+            aws sagemaker stop-training-job --training-job-name "$j" || true
+          done
+          set -e
+
+      - name: Scale ECS service to zero and delete it
+        run: |
+          set +e
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --desired-count 0 || true
+          # Wait for tasks to drain
+          for i in $(seq 1 24); do
+            running=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" --query "services[0].runningCount" --output text 2>/dev/null || echo "0")
+            if [ "$running" = "0" ] || [ "$running" = "None" ]; then
+              echo "Tasks drained."
+              break
+            fi
+            echo "Running tasks: $running. Waiting..."
+            sleep 10
+          done
+          aws ecs delete-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --force || true
+          set -e
+
+      - name: Delete ECS cluster
+        run: |
+          aws ecs delete-cluster --cluster "$ECS_CLUSTER" 2>/dev/null || true
+
+      - name: Deregister ECS task definitions
+        run: |
+          set +e
+          for arn in $(aws ecs list-task-definitions --family-prefix "$ECS_TASK_FAMILY" --query "taskDefinitionArns[]" --output text); do
+            echo "Deregistering $arn"
+            aws ecs deregister-task-definition --task-definition "$arn" >/dev/null || true
+          done
+          set -e
+
+      - name: Find and disable CloudFront distributions for this stack
+        id: cf
+        run: |
+          set +e
+          ALB_DNS=$(aws elbv2 describe-load-balancers --names sentiment-alb --query "LoadBalancers[0].DNSName" --output text 2>/dev/null)
+          echo "ALB DNS: $ALB_DNS"
+          DIST_IDS=""
+          for ID in $(aws cloudfront list-distributions --query "DistributionList.Items[].Id" --output text 2>/dev/null); do
+            ORIGIN=$(aws cloudfront get-distribution --id "$ID" --query "Distribution.DistributionConfig.Origins.Items[0].DomainName" --output text)
+            if [ "$ORIGIN" = "$ALB_DNS" ] || echo "$ORIGIN" | grep -q "sentiment-alb"; then
+              echo "Found CloudFront distribution $ID with origin $ORIGIN"
+              DIST_IDS="$DIST_IDS $ID"
+              # Disable the distribution
+              ETAG=$(aws cloudfront get-distribution-config --id "$ID" --query "ETag" --output text)
+              aws cloudfront get-distribution-config --id "$ID" --query "DistributionConfig" > /tmp/cf-${ID}.json
+              python3 -c "
+          import json
+          c = json.load(open('/tmp/cf-${ID}.json'))
+          c['Enabled'] = False
+          json.dump(c, open('/tmp/cf-${ID}.json', 'w'))
+          "
+              aws cloudfront update-distribution --id "$ID" --if-match "$ETAG" --distribution-config "file:///tmp/cf-${ID}.json" >/dev/null
+              echo "Disabled $ID"
+            fi
+          done
+          echo "DIST_IDS=$DIST_IDS" >> $GITHUB_OUTPUT
+          set -e
+
+      - name: Delete ALB listeners, ALB, and target groups
+        run: |
+          set +e
+          ALB_ARN=$(aws elbv2 describe-load-balancers --names sentiment-alb --query "LoadBalancers[0].LoadBalancerArn" --output text 2>/dev/null)
+          if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+            for L in $(aws elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" --query "Listeners[].ListenerArn" --output text); do
+              echo "Deleting listener $L"
+              aws elbv2 delete-listener --listener-arn "$L" || true
+            done
+            echo "Deleting ALB $ALB_ARN"
+            aws elbv2 delete-load-balancer --load-balancer-arn "$ALB_ARN" || true
+            sleep 20
+          fi
+          for TG in $(aws elbv2 describe-target-groups --names sentiment-tg --query "TargetGroups[].TargetGroupArn" --output text 2>/dev/null); do
+            echo "Deleting target group $TG"
+            aws elbv2 delete-target-group --target-group-arn "$TG" || true
+          done
+          set -e
+
+      - name: Delete ECR repository (and all images)
+        run: |
+          aws ecr delete-repository --repository-name "$ECR_REPOSITORY" --force 2>/dev/null || true
+
+      - name: Delete CloudWatch log groups
+        run: |
+          set +e
+          for LG in /ecs/sentiment-analysis /aws/sagemaker/TrainingJobs; do
+            echo "Deleting log group $LG"
+            aws logs delete-log-group --log-group-name "$LG" || true
+          done
+          set -e
+
+      - name: Delete project security group
+        run: |
+          set +e
+          for SG in $(aws ec2 describe-security-groups --filters "Name=group-name,Values=sentiment-sg" --query "SecurityGroups[].GroupId" --output text); do
+            echo "Deleting security group $SG"
+            aws ec2 delete-security-group --group-id "$SG" || true
+          done
+          set -e
+
+      - name: Detach and delete IAM roles
+        run: |
+          set +e
+          for ROLE in ecsTaskRole ecsTaskExecutionRole SageMakerSentimentExecutionRole; do
+            echo "Cleaning role $ROLE"
+            aws iam list-attached-role-policies --role-name "$ROLE" --query "AttachedPolicies[].PolicyArn" --output text 2>/dev/null | tr '\t' '\n' | while read POLICY; do
+              [ -n "$POLICY" ] && aws iam detach-role-policy --role-name "$ROLE" --policy-arn "$POLICY" || true
+            done
+            aws iam list-role-policies --role-name "$ROLE" --query "PolicyNames[]" --output text 2>/dev/null | tr '\t' '\n' | while read NAME; do
+              [ -n "$NAME" ] && aws iam delete-role-policy --role-name "$ROLE" --policy-name "$NAME" || true
+            done
+            aws iam delete-role --role-name "$ROLE" || true
+          done
+          set -e
+
+      - name: Wait for and delete CloudFront distributions
+        if: ${{ github.event.inputs.delete_cloudfront == 'true' }}
+        run: |
+          set +e
+          for ID in ${{ steps.cf.outputs.DIST_IDS }}; do
+            echo "Waiting for $ID to deploy as disabled (up to 25 minutes)..."
+            for i in $(seq 1 50); do
+              STATUS=$(aws cloudfront get-distribution --id "$ID" --query "Distribution.Status" --output text)
+              ENABLED=$(aws cloudfront get-distribution --id "$ID" --query "Distribution.DistributionConfig.Enabled" --output text)
+              echo "[$i] status=$STATUS enabled=$ENABLED"
+              if [ "$STATUS" = "Deployed" ] && [ "$ENABLED" = "False" ]; then
+                break
+              fi
+              sleep 30
+            done
+            ETAG=$(aws cloudfront get-distribution --id "$ID" --query "ETag" --output text)
+            aws cloudfront delete-distribution --id "$ID" --if-match "$ETAG" || true
+          done
+          set -e
+
+      - name: Final report
+        if: always()
+        run: |
+          echo "## Teardown Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Region: $AWS_REGION" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Surviving resources (intentional)" >> $GITHUB_STEP_SUMMARY
+          echo "- S3 bucket \`deep-learning-sentiment-models\` (your trained models)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Status checks" >> $GITHUB_STEP_SUMMARY
+          ECS_OK=$(aws ecs describe-clusters --clusters sentiment-cluster --query "clusters[0].status" --output text 2>/dev/null || echo "DELETED")
+          ALB_OK=$(aws elbv2 describe-load-balancers --names sentiment-alb 2>&1 | grep -q LoadBalancerNotFound && echo DELETED || echo PRESENT)
+          ECR_OK=$(aws ecr describe-repositories --repository-names sentiment-analysis 2>&1 | grep -q RepositoryNotFoundException && echo DELETED || echo PRESENT)
+          echo "- ECS cluster: $ECS_OK" >> $GITHUB_STEP_SUMMARY
+          echo "- ALB:         $ALB_OK" >> $GITHUB_STEP_SUMMARY
+          echo "- ECR:         $ECR_OK" >> $GITHUB_STEP_SUMMARY
