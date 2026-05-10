@@ -282,15 +282,21 @@ def job_logs(job_name: str, tail: int = 200):
 
 
 @router.post("/jobs/{job_name}/sync")
-def sync_artifacts(job_name: str):
-    """Repack a finished SageMaker model.tar.gz into the inference prefix."""
+def sync_artifacts(job_name: str, force: bool = False):
+    """Repack a finished SageMaker model.tar.gz into the inference prefix.
+
+    Failed jobs can still have a partial model.tar.gz uploaded (e.g. when one
+    of multiple models trained successfully before a later OOM). Pass
+    ?force=true to sync those.
+    """
     sm = _boto_session().client("sagemaker")
     try:
         d = sm.describe_training_job(TrainingJobName=job_name)
     except ClientError as e:
         raise HTTPException(404, f"Job not found: {e.response['Error']['Message']}")
-    if d["TrainingJobStatus"] != "Completed":
-        raise HTTPException(409, f"Job is {d['TrainingJobStatus']}, not Completed")
+    status = d["TrainingJobStatus"]
+    if status not in ("Completed",) and not force:
+        raise HTTPException(409, f"Job is {status}, not Completed. Pass force=true to sync anyway.")
     artifact = d.get("ModelArtifacts", {}).get("S3ModelArtifacts")
     if not artifact:
         raise HTTPException(409, "Job has no model artifact")

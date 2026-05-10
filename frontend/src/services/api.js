@@ -61,8 +61,8 @@ export const listSageMakerJobs = (limit = 20) =>
 export const describeSageMakerJob = (name) =>
   api.get(`/api/sagemaker/jobs/${encodeURIComponent(name)}`).then((r) => r.data);
 
-export const syncSageMakerArtifacts = (name) =>
-  api.post(`/api/sagemaker/jobs/${encodeURIComponent(name)}/sync`).then((r) => r.data);
+export const syncSageMakerArtifacts = (name, force = false) =>
+  api.post(`/api/sagemaker/jobs/${encodeURIComponent(name)}/sync${force ? "?force=true" : ""}`).then((r) => r.data);
 
 export const stopSageMakerJob = (name) =>
   api.post(`/api/sagemaker/jobs/${encodeURIComponent(name)}/stop`).then((r) => r.data);

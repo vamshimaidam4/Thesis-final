@@ -103,11 +103,11 @@ function SageMakerPanel() {
     }
   };
 
-  const handleSync = async () => {
+  const handleSync = async (force = false) => {
     if (!activeJob) return;
     setBusy(true); setError(null); setInfo(null);
     try {
-      const r = await syncSageMakerArtifacts(activeJob.name);
+      const r = await syncSageMakerArtifacts(activeJob.name, force);
       setInfo(`Synced ${r.uploaded.length} files to s3://.../${r.inference_prefix}`);
     } catch (e) {
       setError(e.response?.data?.detail || e.message);
@@ -181,10 +181,12 @@ function SageMakerPanel() {
           <select value={config.instance_type} disabled={busy}
             onChange={e => setConfig({ ...config, instance_type: e.target.value })}
             style={inputStyle}>
-            <option value="ml.m5.xlarge">ml.m5.xlarge ($0.23/hr CPU)</option>
-            <option value="ml.g4dn.xlarge">ml.g4dn.xlarge ($0.74/hr T4)</option>
-            <option value="ml.g5.xlarge">ml.g5.xlarge ($1.41/hr A10G)</option>
-            <option value="ml.p3.2xlarge">ml.p3.2xlarge ($3.83/hr V100)</option>
+            <option value="ml.m5.xlarge">ml.m5.xlarge ($0.23/hr 4vCPU 16GB)</option>
+            <option value="ml.m5.2xlarge">ml.m5.2xlarge ($0.46/hr 8vCPU 32GB)</option>
+            <option value="ml.m5.4xlarge">ml.m5.4xlarge ($0.92/hr 16vCPU 64GB)</option>
+            <option value="ml.g4dn.xlarge">ml.g4dn.xlarge ($0.74/hr T4 GPU)</option>
+            <option value="ml.g5.xlarge">ml.g5.xlarge ($1.41/hr A10G GPU)</option>
+            <option value="ml.p3.2xlarge">ml.p3.2xlarge ($3.83/hr V100 GPU)</option>
           </select>
         </div>
         <div>
@@ -309,6 +311,11 @@ function SageMakerPanel() {
             {activeJob.status === "Completed" && (
               <button className="btn btn-primary" onClick={handleSync} disabled={busy}>
                 <Download size={14} /> Sync to Inference
+              </button>
+            )}
+            {activeJob.status === "Failed" && activeJob.model_artifact && (
+              <button className="btn btn-secondary" onClick={() => handleSync(true)} disabled={busy}>
+                <Download size={14} /> Force Sync (Partial)
               </button>
             )}
             {activeJob.status === "InProgress" && (
