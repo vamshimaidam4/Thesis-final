@@ -227,6 +227,7 @@ def describe_job(job_name: str):
         "name": d["TrainingJobName"],
         "status": d["TrainingJobStatus"],
         "secondary_status": d.get("SecondaryStatus"),
+        "failure_reason": d.get("FailureReason"),
         "created": d["CreationTime"].isoformat(),
         "started": d["TrainingStartTime"].isoformat() if d.get("TrainingStartTime") else None,
         "ended": d["TrainingEndTime"].isoformat() if d.get("TrainingEndTime") else None,
@@ -239,6 +240,45 @@ def describe_job(job_name: str):
             f"?region={config.aws.region}#/jobs/{job_name}"
         ),
     }
+
+
+@router.get("/jobs/{job_name}/logs")
+def job_logs(job_name: str, tail: int = 200):
+    """Return the last N lines of CloudWatch logs for a SageMaker training job."""
+    logs = _boto_session().client("logs")
+    log_group = "/aws/sagemaker/TrainingJobs"
+    try:
+        streams = logs.describe_log_streams(
+            logGroupName=log_group,
+            logStreamNamePrefix=job_name,
+            orderBy="LogStreamName",
+            descending=False,
+            limit=10,
+        ).get("logStreams", [])
+    except ClientError as e:
+        raise HTTPException(500, e.response["Error"]["Message"])
+    if not streams:
+        raise HTTPException(404, f"No log streams for {job_name}")
+
+    events: List[dict] = []
+    for s in streams:
+        try:
+            resp = logs.get_log_events(
+                logGroupName=log_group,
+                logStreamName=s["logStreamName"],
+                startFromHead=False,
+                limit=tail,
+            )
+            for ev in resp.get("events", []):
+                events.append({
+                    "stream": s["logStreamName"],
+                    "timestamp": ev["timestamp"],
+                    "message": ev["message"],
+                })
+        except ClientError:
+            continue
+    events.sort(key=lambda e: e["timestamp"])
+    return {"job_name": job_name, "log_group": log_group, "events": events[-tail:]}
 
 
 @router.post("/jobs/{job_name}/sync")
