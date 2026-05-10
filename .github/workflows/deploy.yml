@@ -130,6 +130,67 @@ jobs:
             --policy-name S3ModelAccess \
             --policy-document file:///tmp/s3-policy.json 2>/dev/null || true
 
+          # Pre-create SageMaker execution role used by training jobs the
+          # backend submits via the /api/sagemaker/* endpoints.
+          cat > /tmp/sm-trust.json << 'SMTRUSTEOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Principal": {"Service": "sagemaker.amazonaws.com"},
+              "Action": "sts:AssumeRole"
+            }]
+          }
+          SMTRUSTEOF
+          aws iam get-role --role-name SageMakerSentimentExecutionRole 2>/dev/null || \
+            aws iam create-role --role-name SageMakerSentimentExecutionRole \
+              --assume-role-policy-document file:///tmp/sm-trust.json
+          aws iam attach-role-policy --role-name SageMakerSentimentExecutionRole \
+            --policy-arn arn:aws:iam::aws:policy/AmazonSageMakerFullAccess 2>/dev/null || true
+          aws iam attach-role-policy --role-name SageMakerSentimentExecutionRole \
+            --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess 2>/dev/null || true
+          aws iam attach-role-policy --role-name SageMakerSentimentExecutionRole \
+            --policy-arn arn:aws:iam::aws:policy/CloudWatchLogsFullAccess 2>/dev/null || true
+
+          # Allow the running ECS task to submit + monitor SageMaker jobs and
+          # pass the SageMaker execution role.
+          cat > /tmp/sm-task-policy.json << SMTASKEOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "sagemaker:CreateTrainingJob",
+                  "sagemaker:DescribeTrainingJob",
+                  "sagemaker:ListTrainingJobs",
+                  "sagemaker:StopTrainingJob",
+                  "sagemaker:AddTags"
+                ],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": ["sts:GetCallerIdentity"],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": ["iam:GetRole", "iam:PassRole"],
+                "Resource": "arn:aws:iam::${ACCOUNT_ID}:role/SageMakerSentimentExecutionRole"
+              },
+              {
+                "Effect": "Allow",
+                "Action": ["logs:DescribeLogStreams", "logs:GetLogEvents"],
+                "Resource": "*"
+              }
+            ]
+          }
+          SMTASKEOF
+          aws iam put-role-policy --role-name ecsTaskRole \
+            --policy-name SageMakerSubmitAccess \
+            --policy-document file:///tmp/sm-task-policy.json 2>/dev/null || true
+
           EXEC_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/ecsTaskExecutionRole"
           TASK_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/ecsTaskRole"
 

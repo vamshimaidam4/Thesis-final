@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
-from app.routes import analysis, aws_routes, health, seed_routes, training  # noqa: E402
+from app.routes import analysis, aws_routes, health, sagemaker_routes, seed_routes, training  # noqa: E402
 
 app = FastAPI(
     title="Sentiment Analysis API",
@@ -28,6 +28,7 @@ app.include_router(analysis.router)
 app.include_router(aws_routes.router)
 app.include_router(seed_routes.router)
 app.include_router(training.router)
+app.include_router(sagemaker_routes.router)
 
 frontend_build = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
 if os.path.isdir(frontend_build):

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { startTraining, getTrainingStatus, getTrainingHistory, getTrainedModels } from "../services/api";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { Play, Square, RefreshCw, Download, Cpu, CheckCircle, XCircle, Clock } from "lucide-react";
+import SageMakerPanel from "../components/SageMakerPanel";
 
 function Training() {
   const [status, setStatus] = useState(null);
@@ -69,6 +70,9 @@ function Training() {
         <h2 className="page-title">Model Training</h2>
         <p className="page-description">Train sentiment analysis models directly from the browser</p>
       </div>
+
+      {/* Cloud (SageMaker) training */}
+      <SageMakerPanel />
 
       {/* Training Control Panel */}
       <div className="card card-accent">

@@ -48,4 +48,26 @@ export const getTrainingHistory = () =>
 export const getTrainedModels = () =>
   api.get("/api/training/models").then((r) => r.data);
 
+// SageMaker (cloud training) endpoints
+export const getSageMakerStatus = () =>
+  api.get("/api/sagemaker/status").then((r) => r.data);
+
+export const startSageMakerTraining = (config) =>
+  api.post("/api/sagemaker/train", config).then((r) => r.data);
+
+export const listSageMakerJobs = (limit = 20) =>
+  api.get(`/api/sagemaker/jobs?limit=${limit}`).then((r) => r.data);
+
+export const describeSageMakerJob = (name) =>
+  api.get(`/api/sagemaker/jobs/${encodeURIComponent(name)}`).then((r) => r.data);
+
+export const syncSageMakerArtifacts = (name) =>
+  api.post(`/api/sagemaker/jobs/${encodeURIComponent(name)}/sync`).then((r) => r.data);
+
+export const stopSageMakerJob = (name) =>
+  api.post(`/api/sagemaker/jobs/${encodeURIComponent(name)}/stop`).then((r) => r.data);
+
+export const reloadInferenceModels = () =>
+  api.post("/api/sagemaker/reload").then((r) => r.data);
+
 export default api;

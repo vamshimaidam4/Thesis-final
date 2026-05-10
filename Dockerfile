@@ -16,6 +16,7 @@ RUN python -c "import nltk; nltk.download('punkt', quiet=True); nltk.download('p
 
 COPY backend/ ./backend/
 COPY seed_data/ ./seed_data/
+COPY aws/ ./aws/
 COPY --from=frontend-build /frontend/dist ./frontend/dist
 
 WORKDIR /app/backend
