@@ -73,6 +73,40 @@ jobs:
           aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com 2>/dev/null || true
           sleep 10
 
+          # ----------------------------------------------------------------
+          # S3 model bucket: ensure exists, enable versioning so trained
+          # checkpoints survive accidental deletes, and set a lifecycle
+          # policy that expires non-current versions after 30 days plus
+          # aborts stale multipart uploads after 7 days.
+          # ----------------------------------------------------------------
+          MODEL_BUCKET="deep-learning-sentiment-models"
+          aws s3api head-bucket --bucket "$MODEL_BUCKET" 2>/dev/null || \
+            aws s3api create-bucket --bucket "$MODEL_BUCKET" --region "$AWS_REGION"
+          aws s3api put-bucket-versioning --bucket "$MODEL_BUCKET" \
+            --versioning-configuration Status=Enabled
+          cat > /tmp/lifecycle.json << 'LCEOF'
+          {
+            "Rules": [
+              {
+                "ID": "ExpireNoncurrentVersionsAfter30Days",
+                "Status": "Enabled",
+                "Filter": {"Prefix": ""},
+                "NoncurrentVersionExpiration": {"NoncurrentDays": 30}
+              },
+              {
+                "ID": "AbortIncompleteMultipartUploadAfter7Days",
+                "Status": "Enabled",
+                "Filter": {"Prefix": ""},
+                "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}
+              }
+            ]
+          }
+          LCEOF
+          aws s3api put-bucket-lifecycle-configuration \
+            --bucket "$MODEL_BUCKET" \
+            --lifecycle-configuration file:///tmp/lifecycle.json
+          echo "S3 bucket hardened: versioning=Enabled, lifecycle applied"
+
           # Create ECS task execution role
           cat > /tmp/ecs-trust.json << 'EOF'
           {
