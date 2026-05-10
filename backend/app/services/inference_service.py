@@ -6,6 +6,7 @@ import nltk
 
 from app.config import config
 from app.models.sentiment_models import HMGS, BertBiLSTMAttention
+from app.services.aws_service import download_model_from_s3
 
 nltk.download("punkt", quiet=True)
 nltk.download("punkt_tab", quiet=True)
@@ -19,6 +20,21 @@ _tokenizer = None
 _hmgs_model = None
 _bilstm_model = None
 
+# S3 prefix written by the SageMaker training pipeline (aws/launch_sagemaker.py).
+S3_INFERENCE_PREFIX = "inference/current/"
+
+
+def _ensure_checkpoint(filename: str) -> str:
+    """Return a local path to the checkpoint, pulling from S3 if missing."""
+    local_path = os.path.join(config.model_path, filename)
+    if os.path.exists(local_path):
+        return local_path
+    s3_key = S3_INFERENCE_PREFIX + filename
+    print(f"Checkpoint {filename} missing locally; trying s3://{config.aws.s3_bucket}/{s3_key}")
+    if download_model_from_s3(s3_key, local_path):
+        return local_path
+    return local_path  # caller checks os.path.exists
+
 
 def get_tokenizer():
     global _tokenizer
@@ -28,16 +44,16 @@ def get_tokenizer():
 
 
 def load_hmgs_model():
-    """Load the HMGS model from checkpoint."""
+    """Load the HMGS model from checkpoint, pulling from S3 if needed."""
     global _hmgs_model
-    checkpoint_path = os.path.join(config.model_path, "hmgs_best.pt")
+    checkpoint_path = _ensure_checkpoint("hmgs_best.pt")
     bert = BertModel.from_pretrained(config.model.bert_model_name)
     model = HMGS(bert, config.model)
     if os.path.exists(checkpoint_path):
         model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE))
         print(f"Loaded HMGS from {checkpoint_path}")
     else:
-        print("No HMGS checkpoint found, using untrained model for demo")
+        print("No HMGS checkpoint found (local or S3), using untrained model for demo")
     model.to(DEVICE)
     model.eval()
     _hmgs_model = model
@@ -45,16 +61,16 @@ def load_hmgs_model():
 
 
 def load_bilstm_model():
-    """Load the BERT-BiLSTM-Attention model from checkpoint."""
+    """Load the BERT-BiLSTM-Attention model from checkpoint, pulling from S3 if needed."""
     global _bilstm_model
-    checkpoint_path = os.path.join(config.model_path, "bilstm_best.pt")
+    checkpoint_path = _ensure_checkpoint("bilstm_best.pt")
     bert = BertModel.from_pretrained(config.model.bert_model_name)
     model = BertBiLSTMAttention(bert, config.model.lstm_hidden, config.model.num_sentiment_classes)
     if os.path.exists(checkpoint_path):
         model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE))
         print(f"Loaded BiLSTM from {checkpoint_path}")
     else:
-        print("No BiLSTM checkpoint found, using untrained model for demo")
+        print("No BiLSTM checkpoint found (local or S3), using untrained model for demo")
     model.to(DEVICE)
     model.eval()
     _bilstm_model = model
